@@ -48,6 +48,7 @@ class Fixtures:
 
     def __init__(self, device: torch.device, nl: int, nb: int, bs: int, obj_kind: str):
         self.device = device
+        self.nl, self.nb, self.bs = nl, nb, bs
         row = sum(w * _es(d) for w, d in PLANE_SPECS)
         es = max(_es(d) for _, d in PLANE_SPECS)
 
