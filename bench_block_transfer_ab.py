@@ -109,6 +109,27 @@ class Fixtures:
         return self.nb * self.bs * self.row / 1024
 
 
+def verify_transfer(fx: Fixtures) -> None:
+    """Byte-exact D2H check: the object must equal the engine tensors.
+
+    block_ids is arange(nb) (identity mapping) and fmt17 packs planes into
+    one row, so the expected object is a plain reshape of each engine plane:
+    object[l][c] == concat_p(bytes(engine_plane[l][p][c])) with c = block*bs+token.
+    """
+    torch.npu.synchronize()
+    layers = []
+    for planes in fx.layers:
+        cols = [p.reshape(fx.chunk, -1).view(torch.uint8).cpu() for p in planes]
+        layers.append(torch.cat(cols, dim=1))
+    expected = torch.stack(layers)
+    got = fx.obj.cpu()
+    if got.shape != expected.shape or not torch.equal(got, expected):
+        raise AssertionError(
+            f"D2H verification failed: object != engine data "
+            f"(shapes {tuple(got.shape)} vs {tuple(expected.shape)})"
+        )
+
+
 def _op():
     return lmc_ops.multi_layer_block_kv_transfer
 
@@ -349,10 +370,11 @@ def main() -> None:
 
     fx = Fixtures(device, a.nl, a.nb, a.bs, a.obj)
     _op()(*fx.args())
-    torch.npu.synchronize()
+    verify_transfer(fx)
     print(
         f"[self-test] OK: nl={a.nl} nb={a.nb} bs={a.bs} "
-        f"{fx.kib_per_call():.0f} KiB/call, obj={a.obj}, device={a.device}"
+        f"{fx.kib_per_call():.0f} KiB/call, obj={a.obj}, device={a.device}, "
+        f"D2H content verified"
     )
 
     skip = {s for s in a.skip.split(",") if s}
@@ -388,6 +410,10 @@ def main() -> None:
     if "d" not in skip:
         res["D"] = scenario_d(fx, [0, 1, 4, 16], min(a.iters, 1000), a.rounds)
         print(f"[D] p50 us vs K torch ops: {res['D']}")
+
+    verify_transfer(fx)
+    res["verify"] = "ok: object == engine data after all scenarios"
+    print("[verify] object == engine data after all scenarios")
 
     out = a.out or f"bench_block_ab_{a.label}.json"
     with open(out, "w") as f:
