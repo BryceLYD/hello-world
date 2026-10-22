@@ -255,29 +255,37 @@ def compare(base_path: str, pr_path: str) -> None:
         pr = json.load(f)
     print(f"\n=== {base['label']}  vs  {pr['label']} ===\n")
 
+    def fmt(v):
+        return "-" if v is None else f"{v:,}"
+
     def row(name, b, p, unit, better="lower"):
         mark = ""
         if b is not None and p is not None:
             mark = "  <- PR better" if (
                 (p < b) == (better == "lower")
             ) else "  <- baseline better"
-        print(f"  {name:<44} {b:>12} {p:>12}  {unit}{mark}")
+        print(f"  {name:<44} {fmt(b):>14} {fmt(p):>14}  {unit}{mark}")
 
     a_b, a_p = base.get("A"), pr.get("A")
     print("[A] single-thread enqueue latency (median of rounds)")
     for k in ("p50_us", "p99_us"):
         row(k, a_b.get(k) if a_b else None, a_p.get(k) if a_p else None, "us")
 
-    b_b, b_p = base.get("B"), pr.get("B")
+    def int_keys(d):
+        return {int(k): v for k, v in d.items()}
+
+    b_b = int_keys(base["B"]) if base.get("B") else None
+    b_p = int_keys(pr["B"]) if pr.get("B") else None
     print("\n[B] aggregate throughput by thread count (calls/s, higher=better)")
     if b_b and b_p:
         for m in sorted(b_b):
             row(f"threads={m}", b_b.get(m), b_p.get(m), "calls/s", better="higher")
         m_max = max(b_b)
+        m_one = min(b_b)
         row(
-            "scaling (M=max vs M=1)",
-            round(b_b[m_max] / b_b[1], 2) if b_b.get(1) else None,
-            round(b_p[m_max] / b_p[1], 2) if b_p.get(1) else None,
+            f"scaling (M={m_max} vs M={m_one})",
+            round(b_b[m_max] / b_b[m_one], 2) if b_b.get(m_one) else None,
+            round(b_p[m_max] / b_p[m_one], 2) if b_p.get(m_one) else None,
             "x",
             better="higher",
         )
@@ -290,10 +298,11 @@ def compare(base_path: str, pr_path: str) -> None:
         row("hammer_calls_per_s", c_b.get("hammer_calls_per_s"),
             c_p.get("hammer_calls_per_s"), "calls/s", better="higher")
 
-    d_b, d_p = base.get("D"), pr.get("D")
+    d_b = int_keys(base["D"]) if base.get("D") else None
+    d_p = int_keys(pr["D"]) if pr.get("D") else None
     print("\n[D] enqueue p50 vs K interleaved torch ops (drain cost)")
     if d_b and d_p:
-        for k in sorted(d_b, key=int):
+        for k in sorted(d_b):
             row(f"K={k}", d_b.get(k), d_p.get(k), "us")
 
 
