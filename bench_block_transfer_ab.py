@@ -134,7 +134,9 @@ def scenario_a(fx: Fixtures, n: int, rounds: int) -> dict:
     return {k: round(statistics.median(v), 2) for k, v in stats.items()}
 
 
-def scenario_b(fx: Fixtures, thread_counts: list[int], n: int, rounds: int) -> dict:
+def scenario_b(
+    fx: Fixtures, thread_counts: list[int], n: int, rounds: int, completion: bool = False
+) -> dict:
     op, args = _op(), fx.args()
     dev_idx = fx.device.index if fx.device.index is not None else 0
     out = {}
@@ -164,13 +166,19 @@ def scenario_b(fx: Fixtures, thread_counts: list[int], n: int, rounds: int) -> d
                 start.wait()
                 t0 = time.perf_counter()
                 done.wait()
+                if completion:
+                    # Pay all debt inside the clock: wait for the torch_npu
+                    # task queue AND the device to finish everything the
+                    # workers enqueued (baseline's queued handlers included).
+                    torch.npu.synchronize()
                 dt = time.perf_counter() - t0
             finally:
                 for t in ts:
                     t.join()
             if err:
                 raise err[0]
-            torch.npu.synchronize()
+            if not completion:
+                torch.npu.synchronize()
             rates.append(m * n / dt)
         out[m] = round(statistics.median(rates), 1)
     return out
@@ -320,6 +328,10 @@ def main() -> None:
     p.add_argument("--threads", default="1,2,4,8")
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--seconds", type=int, default=5, help="scenario C duration")
+    p.add_argument("--b-completion", action="store_true",
+                   help="scenario B: time until ALL work COMPLETES "
+                        "(torch.npu.synchronize inside the timed window, "
+                        "queued debt included) instead of dispatch-only")
     p.add_argument("--skip", default="", help="comma list among a,b,c,d")
     p.add_argument("--compare", nargs=2, metavar=("BASE_JSON", "PR_JSON"))
     a = p.parse_args()
@@ -356,6 +368,7 @@ def main() -> None:
             "bs": a.bs,
             "kib_per_call": round(fx.kib_per_call(), 1),
             "gil_switch_interval_s": sys.getswitchinterval(),
+            "b_completion": a.b_completion,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
     }
@@ -365,8 +378,10 @@ def main() -> None:
         print(f"[A] latency us: {res['A']}")
     if "b" not in skip:
         counts = [int(x) for x in a.threads.split(",") if x]
-        res["B"] = scenario_b(fx, counts, a.iters, a.rounds)
-        print(f"[B] calls/s by threads: {res['B']}")
+        res["B"] = scenario_b(fx, counts, a.iters, a.rounds,
+                              completion=a.b_completion)
+        mode = "total-completion" if a.b_completion else "dispatch-only"
+        print(f"[B] calls/s by threads ({mode}): {res['B']}")
     if "c" not in skip:
         res["C"] = scenario_c(fx, a.seconds)
         print(f"[C] bg-python: {res['C']}")
